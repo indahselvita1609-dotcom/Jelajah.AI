@@ -1,40 +1,58 @@
 
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { Screen, TripData } from '../types';
+import { GoogleGenAI, Type } from "@google/genai";
 
 interface ItineraryPageProps {
   onNavigate: (screen: Screen) => void;
   tripData: TripData | null;
 }
 
+interface Activity {
+  time: string;
+  title: string;
+  desc: string;
+  icon: string;
+}
+
+interface ItineraryDay {
+  day: number;
+  title: string;
+  activities: Activity[];
+}
+
 export const ItineraryPage: React.FC<ItineraryPageProps> = ({ onNavigate, tripData }) => {
-  // Use tripData if available, otherwise fallback to defaults (or empty strings)
-  const displayTitle = tripData?.destination ? `Eksplorasi ${tripData.destination}` : "Eksplorasi Permata Komodo & Flores";
-  const displayDuration = tripData?.duration ? `${tripData.duration} Hari` : "7 Hari 6 Malam";
+  const [itinerary, setItinerary] = useState<ItineraryDay[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+
+  // Determine requested duration, defaulting to 7 if missing
+  const requestedDuration = tripData?.duration ? parseInt(tripData.duration) : 7;
   
-  // Format budget currency if possible
+  // Use tripData if available, otherwise fallback to defaults
+  const displayTitle = tripData?.destination ? `Eksplorasi ${tripData.destination}` : "Eksplorasi Permata Komodo & Flores";
+  
+  // Display duration matches the generated itinerary length if available, otherwise the requested duration
+  const displayDuration = itinerary.length > 0 ? `${itinerary.length} Hari` : `${requestedDuration} Hari`;
+  
+  // Format budget currency
   const displayBudget = tripData?.budget 
     ? new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR' }).format(Number(tripData.budget))
     : "Rp 19.500.000";
 
-  const displayStyle = tripData?.travelStyle || "Petualangan & Santai";
-
-  // Dynamic Itinerary Generation Logic
-  const generateItinerary = () => {
-    const duration = tripData?.duration ? parseInt(tripData.duration) : 3;
-    const safeDuration = isNaN(duration) || duration < 1 ? 3 : duration;
+  // Fallback Logic (Local Generator) - Used when API Key is missing or API fails
+  const generateFallbackItinerary = (): ItineraryDay[] => {
+    const safeDuration = isNaN(requestedDuration) || requestedDuration < 1 ? 7 : requestedDuration;
     const destination = tripData?.destination || "Destinasi Pilihan";
     const interests = tripData?.interests || "Wisata Umum";
     const accommodation = tripData?.accommodation || "Hotel Pilihan";
 
-    const generatedDays = [];
+    const generatedDays: ItineraryDay[] = [];
 
     for (let i = 1; i <= safeDuration; i++) {
       let title = "";
-      let activities = [];
+      let activities: Activity[] = [];
 
       if (i === 1) {
-        // First Day: Arrival
         title = "Kedatangan & Check-in";
         activities = [
           { time: "14:00", title: "Check-in Akomodasi", icon: "hotel", desc: `Tiba dan check-in di ${accommodation} yang nyaman.` },
@@ -42,7 +60,6 @@ export const ItineraryPage: React.FC<ItineraryPageProps> = ({ onNavigate, tripDa
           { time: "19:00", title: "Makan Malam Selamat Datang", icon: "restaurant", desc: "Menikmati hidangan lokal pertama yang menggugah selera." }
         ];
       } else if (i === safeDuration) {
-        // Last Day: Departure
         title = "Belanja Oleh-oleh & Kepulangan";
         activities = [
           { time: "09:00", title: "Pusat Oleh-oleh", icon: "shopping_bag", desc: `Mencari buah tangan khas ${destination}.` },
@@ -50,24 +67,22 @@ export const ItineraryPage: React.FC<ItineraryPageProps> = ({ onNavigate, tripDa
           { time: "13:00", title: "Menuju Bandara/Pelabuhan", icon: "flight_takeoff", desc: "Terima kasih telah menjelajah bersama kami!" }
         ];
       } else {
-        // Middle Days: Rotate patterns based on index
         const pattern = i % 3;
-        
-        if (pattern === 2) { // Day 2, 5, 8...
+        if (pattern === 2) {
            title = "Eksplorasi Alam & Ikonik";
            activities = [
              { time: "08:00", title: `Jelajah Landmark ${destination}`, icon: "photo_camera", desc: "Mengunjungi spot foto paling ikonik dan bersejarah." },
              { time: "12:00", title: "Makan Siang Piknik", icon: "park", desc: "Makan siang santai sambil menikmati pemandangan alam." },
              { time: "14:00", title: "Petualangan Alam", icon: "hiking", desc: "Trekking ringan atau aktivitas outdoor menikmati udara segar." }
            ];
-        } else if (pattern === 0) { // Day 3, 6, 9...
+        } else if (pattern === 0) {
            title = `Fokus Minat: ${interests}`;
            activities = [
              { time: "09:00", title: "Aktivitas Khusus", icon: "local_activity", desc: `Sesi mendalam sesuai minat Anda: ${interests}.` },
              { time: "13:00", title: "Kafe & Relaksasi", icon: "coffee", desc: "Bersantai di tempat hits lokal." },
              { time: "16:00", title: "Sunset Point", icon: "wb_twilight", desc: "Menutup hari dengan pemandangan matahari terbenam terbaik." }
            ];
-        } else { // Day 4, 7, 10...
+        } else {
            title = "Budaya & Kearifan Lokal";
            activities = [
              { time: "08:30", title: "Kunjungan Desa Wisata", icon: "groups", desc: "Berinteraksi langsung dengan warga lokal." },
@@ -76,168 +91,206 @@ export const ItineraryPage: React.FC<ItineraryPageProps> = ({ onNavigate, tripDa
            ];
         }
       }
-
       generatedDays.push({ day: i, title, activities });
     }
-
     return generatedDays;
   };
 
-  const days = generateItinerary();
+  useEffect(() => {
+    const fetchItinerary = async () => {
+      setIsLoading(true);
+      
+      const apiKey = process.env.API_KEY;
+
+      if (!apiKey || !tripData) {
+        setItinerary(generateFallbackItinerary());
+        setIsLoading(false);
+        return;
+      }
+
+      try {
+        const ai = new GoogleGenAI({ apiKey });
+        
+        const prompt = `
+          Peran: Anda adalah Travel Planner ahli untuk destinasi Indonesia.
+          Tugas: Buatkan itinerary perjalanan liburan harian yang detail ke ${tripData.destination}.
+          
+          Parameter:
+          - Durasi: ${requestedDuration} hari (WAJIB: Output harus memuat tepat ${requestedDuration} item hari).
+          - Budget: ${tripData.budget} IDR.
+          - Gaya Perjalanan: ${tripData.travelStyle}.
+          - Akomodasi: ${tripData.accommodation}.
+          - Minat: ${tripData.interests}.
+          - Catatan: ${tripData.notes}.
+          - Bahasa: Indonesia.
+          
+          Format Output: JSON Array dari Object Day.
+        `;
+
+        const responseSchema = {
+          type: Type.ARRAY,
+          items: {
+            type: Type.OBJECT,
+            properties: {
+              day: { type: Type.INTEGER },
+              title: { type: Type.STRING },
+              activities: {
+                type: Type.ARRAY,
+                items: {
+                  type: Type.OBJECT,
+                  properties: {
+                    time: { type: Type.STRING },
+                    title: { type: Type.STRING },
+                    desc: { type: Type.STRING },
+                    icon: { type: Type.STRING },
+                  },
+                  required: ["time", "title", "desc", "icon"],
+                },
+              },
+            },
+            required: ["day", "title", "activities"],
+          },
+        };
+
+        const response = await ai.models.generateContent({
+          model: 'gemini-2.5-flash',
+          contents: prompt,
+          config: {
+            responseMimeType: "application/json",
+            responseSchema: responseSchema,
+          }
+        });
+
+        const text = response.text;
+        if (text) {
+          try {
+            const data = JSON.parse(text);
+            if (Array.isArray(data)) {
+               setItinerary(data);
+            } else {
+               setItinerary(generateFallbackItinerary());
+            }
+          } catch (e) {
+             console.error("JSON Parse error", e);
+             setItinerary(generateFallbackItinerary());
+          }
+        } else {
+           setItinerary(generateFallbackItinerary());
+        }
+      } catch (error) {
+        console.error("Gemini API Error:", error);
+        setItinerary(generateFallbackItinerary());
+      } finally {
+        setIsLoading(false);
+      }
+    };
+
+    fetchItinerary();
+  }, [tripData, requestedDuration]);
 
   return (
-    <div className="flex-1 bg-background-light dark:bg-background-dark min-h-screen">
-      {/* Hero Header */}
-      <div className="relative h-[300px] md:h-[400px] w-full">
+    <div className="flex flex-col min-h-screen">
+      <div className="relative h-[40vh] min-h-[300px] w-full overflow-hidden">
         <div 
           className="absolute inset-0 bg-cover bg-center"
-          style={{ backgroundImage: 'url("https://lh3.googleusercontent.com/aida-public/AB6AXuB52hTygleySdPBtIZCDVblvBdGXXY-LtpgZqHU0FI4AiaA3WfW_PTig7PZ4JcbmAiQZpUM12WqcxCiZwSPiwBoYXy_1tZE9P3rxQKR3KszdT2P7aYEL3x_L7ogSea-amhSAhtnGsl_uC_A6WblmEFdpZNMLqc2Rt3GmvJg5sFll7DBcytTZ8FaBaLaGMuL1HcPqMcS2nlXoaVMqeB7wAj8FPLuXVtM_KbLUln1CAH934SmI_MpAZYZCn1twM00GgKqiPaE7ZkbHKnG")' }}
+          style={{ backgroundImage: 'url("https://lh3.googleusercontent.com/aida-public/AB6AXuD84jWk_Q2J121D5oV1C3k5uKzH32Wf8kZ9X9z7y4Q3L4p0Y7X5M2u1Z8I0P9N2r6A4D7E3B5C8G1H9J0K2L4M6N8O_P1Q3R5S7T9U0V2W4X6Y8Z0a1b2c3d4e5")' }}
         >
-          <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/40 to-transparent"></div>
+           <div className="absolute inset-0 bg-black/40" />
         </div>
-        <div className="absolute bottom-0 left-0 w-full p-6 md:p-10 max-w-screen-xl mx-auto">
-          <button 
-            onClick={() => onNavigate(Screen.HOME)}
-            className="mb-4 flex items-center gap-2 text-white/80 hover:text-white transition-colors text-sm font-medium"
-          >
-            <span className="material-symbols-outlined text-lg">arrow_back</span>
-            Kembali ke Beranda
-          </button>
-          <h1 className="text-3xl md:text-5xl font-black text-white mb-2">{displayTitle}</h1>
-          <div className="flex flex-wrap gap-4 text-white/90 text-sm md:text-base font-medium">
-            <span className="flex items-center gap-1"><span className="material-symbols-outlined text-lg">calendar_month</span> Fleksibel</span>
-            <span className="flex items-center gap-1"><span className="material-symbols-outlined text-lg">schedule</span> {displayDuration}</span>
-            <span className="flex items-center gap-1"><span className="material-symbols-outlined text-lg">group</span> 2 Dewasa</span>
-          </div>
+        <div className="absolute inset-0 flex flex-col justify-end p-6 sm:p-10 max-w-screen-xl mx-auto w-full">
+           <button 
+             onClick={() => onNavigate(Screen.HOME)}
+             className="absolute top-6 left-6 sm:left-10 flex items-center gap-2 text-white/80 hover:text-white transition-colors"
+           >
+             <span className="material-symbols-outlined">arrow_back</span>
+             <span className="text-sm font-bold">Kembali</span>
+           </button>
+           <div className="text-white">
+             <p className="text-sm font-bold tracking-wider text-primary-alt mb-2 uppercase">Itinerari Personal</p>
+             <h1 className="text-3xl sm:text-4xl md:text-5xl font-black leading-tight mb-4">{displayTitle}</h1>
+             <div className="flex flex-wrap gap-4 text-sm font-medium">
+               <div className="flex items-center gap-2 bg-white/20 backdrop-blur-md px-3 py-1.5 rounded-full">
+                 <span className="material-symbols-outlined text-lg">calendar_month</span>
+                 {displayDuration}
+               </div>
+               <div className="flex items-center gap-2 bg-white/20 backdrop-blur-md px-3 py-1.5 rounded-full">
+                 <span className="material-symbols-outlined text-lg">payments</span>
+                 {displayBudget}
+               </div>
+               <div className="flex items-center gap-2 bg-white/20 backdrop-blur-md px-3 py-1.5 rounded-full">
+                 <span className="material-symbols-outlined text-lg">person</span>
+                 {tripData?.travelStyle || "Petualangan"}
+               </div>
+             </div>
+           </div>
         </div>
       </div>
 
-      <div className="max-w-screen-xl mx-auto px-4 sm:px-10 py-8 grid grid-cols-1 lg:grid-cols-3 gap-8">
-        {/* Left Column: Itinerary Timeline */}
-        <div className="lg:col-span-2 space-y-8">
-          <div className="flex items-center justify-between">
-            <h2 className="text-2xl font-bold text-text-light dark:text-text-dark">Rencana Perjalanan</h2>
-            <button className="flex items-center gap-2 text-primary font-bold text-sm hover:underline" onClick={() => onNavigate(Screen.PLANNER)}>
-              <span className="material-symbols-outlined text-lg">edit</span>
-              Edit Rencana
-            </button>
-          </div>
-
-          <div className="space-y-6">
-            {days.map((day, index) => (
-              <div key={index} className="relative pl-8 md:pl-0">
-                {/* Timeline Line (Desktop) */}
-                <div className="hidden md:block absolute left-[19px] top-0 bottom-0 w-0.5 bg-primary/20 last:bottom-auto last:h-full"></div>
-                
-                <div className="flex flex-col md:flex-row gap-6">
-                  {/* Day Badge */}
-                  <div className="flex-shrink-0 z-10">
-                     <div className="flex items-center justify-center size-10 rounded-full bg-primary text-white font-bold text-lg shadow-lg border-4 border-white dark:border-surface-dark">
-                       {day.day}
-                     </div>
-                  </div>
-
-                  {/* Day Content */}
-                  <div className="flex-grow space-y-4">
-                    <h3 className="text-xl font-bold text-text-light dark:text-text-dark pt-1">Hari {day.day}: {day.title}</h3>
-                    
-                    <div className="bg-white dark:bg-surface-dark rounded-xl border border-primary/10 shadow-sm overflow-hidden">
-                      {day.activities.map((activity, idx) => (
-                        <div key={idx} className={`p-4 flex gap-4 ${idx !== day.activities.length - 1 ? 'border-b border-primary/5' : ''}`}>
-                          <div className="text-sm font-medium text-text-light/60 dark:text-text-dark/60 w-12 pt-0.5">{activity.time}</div>
-                          <div className="flex-1">
-                            <div className="flex items-center gap-2 mb-1">
-                              <span className="material-symbols-outlined text-primary text-lg">{activity.icon}</span>
-                              <h4 className="font-bold text-text-light dark:text-text-dark">{activity.title}</h4>
-                            </div>
-                            <p className="text-sm text-text-light/70 dark:text-text-dark/70">{activity.desc}</p>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        {/* Right Column: Details & Actions */}
-        <div className="space-y-6">
-          {/* Actions Card */}
-          <div className="bg-white dark:bg-surface-dark rounded-xl p-6 border border-primary/10 shadow-sm sticky top-24">
-             <h3 className="text-lg font-bold text-text-light dark:text-text-dark mb-4">Aksi Cepat</h3>
-             <div className="space-y-3">
-               <button className="w-full flex items-center justify-center gap-2 h-12 rounded-lg bg-primary text-white font-bold hover:bg-opacity-90 transition-colors shadow-md">
-                 <span className="material-symbols-outlined">download</span>
-                 Unduh PDF Itinerari
-               </button>
-               <button className="w-full flex items-center justify-center gap-2 h-12 rounded-lg bg-white dark:bg-surface-dark border border-primary/20 text-primary font-bold hover:bg-primary/5 transition-colors">
-                 <span className="material-symbols-outlined">share</span>
-                 Bagikan Rencana
-               </button>
-               <button className="w-full flex items-center justify-center gap-2 h-12 rounded-lg bg-white dark:bg-surface-dark border border-primary/20 text-text-light dark:text-text-dark font-medium hover:bg-primary/5 transition-colors">
-                 <span className="material-symbols-outlined">calendar_add_on</span>
-                 Tambahkan ke Kalender
-               </button>
-             </div>
-
-             <div className="mt-8 pt-6 border-t border-primary/10">
-               <h3 className="text-lg font-bold text-text-light dark:text-text-dark mb-4">Ringkasan Biaya</h3>
-               <div className="space-y-2 text-sm">
-                 <div className="flex justify-between text-text-light/70 dark:text-text-dark/70">
-                   <span>Akomodasi</span>
-                   <span>-</span>
-                 </div>
-                 <div className="flex justify-between text-text-light/70 dark:text-text-dark/70">
-                   <span>Transportasi & Aktivitas</span>
-                   <span>-</span>
-                 </div>
-                 <div className="flex justify-between text-text-light/70 dark:text-text-dark/70">
-                   <span>Biaya Layanan AI</span>
-                   <span>Rp 50.000</span>
-                 </div>
-                 <div className="flex justify-between font-bold text-text-light dark:text-text-dark text-base pt-2 border-t border-dashed border-primary/20 mt-2">
-                   <span>Estimasi Total</span>
-                   <span className="text-primary">{displayBudget}</span>
-                 </div>
-               </div>
-             </div>
-          </div>
+      <div className="flex-1 bg-background-light dark:bg-background-dark">
+        <div className="max-w-screen-xl mx-auto px-4 sm:px-10 py-10">
           
-          {/* Weather Widget Placeholder */}
-          <div className="bg-gradient-to-br from-blue-500 to-blue-600 rounded-xl p-6 text-white shadow-md">
-            <div className="flex justify-between items-start">
-              <div>
-                <p className="font-medium opacity-90">Cuaca di {tripData?.destination || 'Tujuan'}</p>
-                <h3 className="text-3xl font-bold mt-1">29°C</h3>
-                <p className="text-sm opacity-90 mt-1">Cerah Berawan</p>
+          {isLoading ? (
+            <div className="flex flex-col items-center justify-center py-20 gap-6">
+              <div className="relative size-16">
+                 <div className="absolute inset-0 rounded-full border-4 border-primary/20"></div>
+                 <div className="absolute inset-0 rounded-full border-4 border-primary border-t-transparent animate-spin"></div>
               </div>
-              <span className="material-symbols-outlined text-5xl opacity-80">partly_cloudy_day</span>
+              <p className="text-text-light dark:text-text-dark text-lg font-medium animate-pulse">Sedang menyusun petualangan impian Anda...</p>
             </div>
-            <div className="mt-6 flex justify-between text-sm opacity-90">
-              <div className="flex flex-col items-center">
-                <span>Sen</span>
-                <span className="material-symbols-outlined my-1">sunny</span>
-                <span>30°</span>
-              </div>
-              <div className="flex flex-col items-center">
-                <span>Sel</span>
-                <span className="material-symbols-outlined my-1">sunny</span>
-                <span>31°</span>
-              </div>
-              <div className="flex flex-col items-center">
-                <span>Rab</span>
-                <span className="material-symbols-outlined my-1">cloud</span>
-                <span>28°</span>
-              </div>
-              <div className="flex flex-col items-center">
-                <span>Kam</span>
-                <span className="material-symbols-outlined my-1">partly_cloudy_day</span>
-                <span>29°</span>
-              </div>
+          ) : (
+            <div className="flex flex-col gap-8">
+               {itinerary.map((dayItem) => (
+                 <div key={dayItem.day} className="flex flex-col md:flex-row gap-6 md:gap-10">
+                    <div className="flex md:flex-col items-center md:items-start gap-4 md:w-32 shrink-0">
+                       <div className="flex items-center justify-center size-12 rounded-full bg-primary text-white font-bold text-xl shadow-lg shadow-primary/20">
+                         {dayItem.day}
+                       </div>
+                       <div className="flex flex-col">
+                         <span className="text-xs font-bold text-primary uppercase tracking-wider">HARI KE-{dayItem.day}</span>
+                         <span className="text-sm font-medium text-text-light/60 dark:text-text-dark/60 md:hidden"> - {dayItem.title}</span>
+                       </div>
+                    </div>
+                    
+                    <div className="flex-1 flex flex-col gap-6 pt-2 pb-10 border-l-2 border-primary/10 pl-6 md:pl-10 relative">
+                       <div className="absolute left-[-1px] top-4 size-2 rounded-full bg-primary md:hidden"></div>
+                       <h3 className="text-xl font-bold text-text-light dark:text-text-dark hidden md:block">{dayItem.title}</h3>
+                       
+                       <div className="grid gap-4">
+                          {dayItem.activities.map((activity, idx) => (
+                             <div key={idx} className="group flex gap-4 p-4 rounded-xl bg-white dark:bg-surface-dark border border-primary/10 hover:border-primary/30 transition-all hover:shadow-md">
+                                <div className="flex flex-col items-center gap-2 min-w-[60px]">
+                                   <span className="text-xs font-bold text-text-light/50 dark:text-text-dark/50">{activity.time}</span>
+                                   <div className="flex items-center justify-center size-10 rounded-full bg-primary/5 text-primary group-hover:bg-primary group-hover:text-white transition-colors">
+                                      <span className="material-symbols-outlined text-xl">{activity.icon || 'circle'}</span>
+                                   </div>
+                                </div>
+                                <div className="flex flex-col gap-1">
+                                   <h4 className="text-base font-bold text-text-light dark:text-text-dark">{activity.title}</h4>
+                                   <p className="text-sm text-text-light/70 dark:text-text-dark/70 leading-relaxed">{activity.desc}</p>
+                                </div>
+                             </div>
+                          ))}
+                       </div>
+                    </div>
+                 </div>
+               ))}
             </div>
-          </div>
+          )}
+
+          {!isLoading && (
+            <div className="mt-12 flex flex-col items-center justify-center gap-4 py-8 border-t border-primary/10">
+               <h3 className="text-lg font-bold text-text-light dark:text-text-dark">Sudah siap berangkat?</h3>
+               <div className="flex gap-4">
+                  <button className="flex items-center justify-center gap-2 h-10 px-6 rounded-xl border border-primary/20 hover:bg-primary/5 transition-colors text-sm font-bold text-text-light dark:text-text-dark">
+                    <span className="material-symbols-outlined">share</span> Bagikan
+                  </button>
+                  <button className="flex items-center justify-center gap-2 h-10 px-6 rounded-xl bg-primary-alt text-white hover:bg-opacity-90 transition-colors text-sm font-bold shadow-lg shadow-primary/20">
+                    <span className="material-symbols-outlined">download</span> Unduh PDF
+                  </button>
+               </div>
+            </div>
+          )}
+
         </div>
       </div>
     </div>
